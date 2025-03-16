@@ -16,7 +16,7 @@ RUN touch src/main.rs
 
 RUN cargo install --path . --offline
 
-FROM debian:buster-slim
+FROM debian:bookworm-slim
 
 RUN apt-get update
 
