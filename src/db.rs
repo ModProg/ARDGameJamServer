@@ -14,7 +14,7 @@ pub struct DB(AsyncDatabase);
 
 #[derive(Deserialize, Serialize, Collection, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
-#[collection(name = "highscore", views = [ScoreAndTime, HighscoreForUser])]
+#[collection(name = "highscore", views = [ScoreAndTime, HighscoreByUser])]
 pub struct Highscore {
     pub userid: String,
     pub username: String,
@@ -57,10 +57,10 @@ impl CollectionMapReduce for ScoreAndTime {
 }
 
 #[derive(Debug, Clone, View, ViewSchema)]
-#[view(collection = Highscore, key = String, value=(u64, i128), name = "highscore-for-user2")]
-struct HighscoreForUser;
+#[view(collection = Highscore, key = String, name = "highscore-by-user")]
+struct HighscoreByUser;
 
-impl CollectionMapReduce for HighscoreForUser {
+impl CollectionMapReduce for HighscoreByUser {
     fn map<'doc>(
         &self,
         document: bonsaidb::core::document::CollectionDocument<<Self::View as View>::Collection>,
@@ -68,21 +68,7 @@ impl CollectionMapReduce for HighscoreForUser {
     where
         bonsaidb::core::document::CollectionDocument<<Self::View as View>::Collection>: 'doc,
     {
-        document.header.emit_key_and_value(
-            document.contents.userid,
-            (
-                document.contents.score,
-                -(document.contents.created_at.unix_timestamp_nanos()),
-            ),
-        )
-    }
-
-    fn reduce(
-        &self,
-        mappings: &[schema::ViewMappedValue<'_, Self>],
-        _rereduce: bool,
-    ) -> schema::ReduceResult<Self::View> {
-        Ok(mappings.iter().map(|v| v.value).max().unwrap_or_default())
+        document.header.emit_key(document.contents.userid)
     }
 }
 
@@ -114,17 +100,17 @@ impl DB {
     }
 
     pub async fn get_around(&self, userid: String) -> Result<Vec<Highscore>> {
-        if !HighscoreForUser::entries_async(&self.0)
+        let highscore_by_user = HighscoreByUser::entries_async(&self.0)
             .with_key(&userid)
             .limit(1)
-            .query()
-            .await?
-            .is_empty()
-        {
-            let highest_score_for_user = HighscoreForUser::entries_async(&self.0)
-                .with_key(&userid)
-                .reduce()
-                .await?;
+            .query_with_collection_docs()
+            .await?;
+        if !highscore_by_user.is_empty() {
+            let score = highscore_by_user.into_iter().next().unwrap();
+            let highest_score_for_user = (
+                score.document.contents.score,
+                -score.document.contents.created_at.unix_timestamp_nanos(),
+            );
             let user_place = ScoreAndTime::entries_async(&self.0)
                 .with_key_range(highest_score_for_user..)
                 .reduce()
@@ -163,7 +149,23 @@ impl DB {
     }
 
     pub async fn insert(&self, highscore: Highscore) -> Result<()> {
-        self.0.collection::<Highscore>().push(&highscore).await?;
+        let existing = HighscoreByUser::entries_async(&self.0)
+            .with_key(&highscore.userid)
+            .query_with_collection_docs()
+            .await?;
+        if let Some(existing) = existing.into_iter().next() {
+            if highscore.score > existing.document.contents.score {
+                existing
+                    .document
+                    .clone()
+                    .modify_async(&self.0, |m| {
+                        m.contents = highscore.clone();
+                    })
+                    .await?;
+            }
+        } else {
+            self.0.collection::<Highscore>().push(&highscore).await?;
+        }
         Ok(())
     }
 }
