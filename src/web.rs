@@ -1,7 +1,7 @@
 use actix_web::dev::HttpServiceFactory;
 use actix_web::error::ErrorInternalServerError;
 use actix_web::web::{Data, Json, Path};
-use actix_web::{get, post};
+use actix_web::{get, post, routes};
 use serde::Serialize;
 use time::OffsetDateTime;
 
@@ -13,7 +13,16 @@ struct Container {
 }
 
 pub fn scope() -> impl HttpServiceFactory {
-    (get, get_around, post)
+    (get, get_around, post, delete)
+}
+
+#[routes]
+#[get("/{user}/delete")]
+#[delete("/{user}")]
+async fn delete(db: Data<DB>, user: Path<String>) -> actix_web::Result<()> {
+    db.delete(user.into_inner())
+        .await
+        .map_err(ErrorInternalServerError)
 }
 
 #[get("/")]

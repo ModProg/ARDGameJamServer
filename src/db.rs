@@ -1,8 +1,6 @@
 use bonsaidb::core::connection::AsyncConnection;
 use bonsaidb::core::document::Emit;
-use bonsaidb::core::schema::{
-    self, Collection, CollectionMapReduce, SerializedView, View, ViewSchema,
-};
+use bonsaidb::core::schema::{self, Collection, CollectionMapReduce, View, ViewSchema};
 use bonsaidb::local::AsyncDatabase;
 use bonsaidb::local::config::{Builder, StorageConfiguration};
 use serde::*;
@@ -84,7 +82,9 @@ impl DB {
     }
 
     pub async fn get_top(&self) -> Result<Vec<Highscore>> {
-        Ok(ScoreAndTime::entries_async(&self.0)
+        Ok(self
+            .0
+            .view::<ScoreAndTime>()
             .descending()
             .limit(20)
             .query_with_collection_docs()
@@ -100,9 +100,10 @@ impl DB {
     }
 
     pub async fn get_around(&self, userid: String) -> Result<Vec<Highscore>> {
-        let highscore_by_user = HighscoreByUser::entries_async(&self.0)
+        let highscore_by_user = self
+            .0
+            .view::<HighscoreByUser>()
             .with_key(&userid)
-            .limit(1)
             .query_with_collection_docs()
             .await?;
         if !highscore_by_user.is_empty() {
@@ -111,11 +112,15 @@ impl DB {
                 score.document.contents.score,
                 -score.document.contents.created_at.unix_timestamp_nanos(),
             );
-            let user_place = ScoreAndTime::entries_async(&self.0)
+            let user_place = self
+                .0
+                .view::<ScoreAndTime>()
                 .with_key_range(highest_score_for_user..)
                 .reduce()
                 .await?;
-            let mut before: Vec<_> = ScoreAndTime::entries_async(&self.0)
+            let mut before: Vec<_> = self
+                .0
+                .view::<ScoreAndTime>()
                 .ascending()
                 .with_key_range(highest_score_for_user..)
                 .limit(10)
@@ -128,7 +133,9 @@ impl DB {
                 score.place = user_place - i;
             }
             before.reverse();
-            let after: Vec<_> = ScoreAndTime::entries_async(&self.0)
+            let after: Vec<_> = self
+                .0
+                .view::<ScoreAndTime>()
                 .descending()
                 .with_key_range(..highest_score_for_user)
                 .limit(10)
@@ -149,7 +156,9 @@ impl DB {
     }
 
     pub async fn insert(&self, highscore: Highscore) -> Result<()> {
-        let existing = HighscoreByUser::entries_async(&self.0)
+        let existing = self
+            .0
+            .view::<HighscoreByUser>()
             .with_key(&highscore.userid)
             .query_with_collection_docs()
             .await?;
@@ -166,6 +175,15 @@ impl DB {
         } else {
             self.0.collection::<Highscore>().push(&highscore).await?;
         }
+        Ok(())
+    }
+
+    pub async fn delete(&self, user: String) -> Result<()> {
+        self.0
+            .view::<HighscoreByUser>()
+            .with_key(&user)
+            .delete_docs()
+            .await?;
         Ok(())
     }
 }
